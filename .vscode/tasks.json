@@ -1,0 +1,32 @@
+{
+	// See https://go.microsoft.com/fwlink/?LinkId=733558
+	// for the documentation about the tasks.json format
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "CMake config - fetch libxml2",
+			"type": "shell",
+			"command": "cmake -B build -DCMAKE_INSTALL_PREFIX='./install' .",
+			"problemMatcher": [],
+			"group": {
+				"kind": "build"
+			}
+		},
+		{
+			"label": "CMake build - Debug",
+			"type": "shell",
+			"command": "cmake --build build --target=install --config=Debug",
+			"group": {
+				"kind": "build"
+			}
+		},
+		{
+			"label": "CMake build - Release",
+			"type": "shell",
+			"command": "cmake --build build --target=install --config=Release",
+			"group": {
+				"kind": "build"
+			}
+		}
+	]
+}
