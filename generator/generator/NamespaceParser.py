@@ -60,11 +60,31 @@ class NamespaceManager:
 			case 'integer' | 'negativeInteger' | 'nonNegativeInteger' | 'nonPositiveInteger' | 'positiveInteger':
 				# TODO: use the correct restrictions on these - probably best by loading the xmlschema schema.
 				return SimpleType("integer")
-			case 'anyURI' | 'date' | 'dateTime' | 'gDay' | 'gMonth' | 'gMonthDay' | 'gYear' | 'gYearMonth' | 'ID' | 'Name' | 'NCName' | 'normalizedString' | 'QName' | 'string' | 'time' | 'token':
+			case 'anyURI' | 'date' | 'dateTime' | 'duration' | 'gDay' | 'gMonth' | 'gMonthDay' | 'gYear' | 'gYearMonth' | 'ID' | 'Name' | 'NCName' | 'normalizedString' | 'QName' | 'string' | 'time' | 'token':
 				# TODO: use the correct restrictions on these - probably best by loading the xmlschema schema.
+				return SimpleType("string")
+			case 'anyType':
+				# TODO: Not sure what is correct to return here...
 				return SimpleType("string")
 
 		raise RuntimeError(f'Type {name} not found.')
+
+	def getElement(self, name: str) -> 'Type':
+		if ':' in name:
+			ns, name = name.split('[:]') if name.count('[:]') == 1 else name.split(':')
+			if ns in self.namespaces:
+				return self.namespaces[ns].getRawElement(name)
+			#elif ns != 'http://www.w3.org/2001/XMLSchema':
+			raise RuntimeError(f'Namespace {ns} not found')
+			# purposeful fallthrough for XML schema types
+
+		else:
+			for namespace in self.namespaces.values():
+				ele = namespace.getRawElement(name)
+				if ele is not None:
+					return ele
+
+		raise RuntimeError(f'Element {name} not found.')
 
 class NamespaceParser:
 	def __init__(self, url: str, name: str, manager: NamespaceManager):
@@ -73,7 +93,7 @@ class NamespaceParser:
 		self.manager = manager
 
 		self._aliases: dict[str, str] = {}
-		self.elements: list[ET.Element] = []
+		self.elements: list[Element] = []
 		self.groups: list[ET.Element] = []
 		self.imports: list[ET.Element] = []
 		self.includes: list[str] = []
@@ -99,10 +119,10 @@ class NamespaceParser:
 				self._aliases[prefix] = uri
 			elif event == 'start':
 				#print("start", elem)
-				root = elem
-				break
+				if root == None:
+					root = elem
 		if root == None:
-			raise RuntimeError("No end event when parsing xml file")
+			raise RuntimeError("No start event when parsing xml file")
 		return root
 
 	def parseElements(self, parent: ET.Element):
@@ -116,7 +136,7 @@ class NamespaceParser:
 			elif element.tag.endswith('complexType') or element.tag.endswith('simpleType'):
 				self.types.append(Type(self, element))
 			elif element.tag.endswith('element'):
-				self.elements.append(element)
+				self.elements.append(Element(element, self))
 			elif element.tag.endswith('group'):
 				self.groups.append(element)
 			elif element.tag.endswith('import'):
@@ -139,7 +159,9 @@ class NamespaceParser:
 		if 'citygml' not in self.url:
 			print(f"Weird ns {self.name} at {self.url}")
 		for type in self.types:
-			type.compile()
+			type.compileType()
+		for element in self.elements:
+			element.compileElement()
 
 	def getRawType(self, name: str) -> 'Type':
 		for type in self.types:
@@ -160,6 +182,25 @@ class NamespaceParser:
 		# TODO: Only check (anonymous) namespaces that are referenced in the schema.
 		return self.manager.getType(name)
 
+	def getRawElement(self, name: str) -> 'Element':
+		for ele in self.elements:
+			if ele.name == name:
+				return ele
+		return None
+
+	def getElement(self, name: str) -> 'Element':
+		if ':' in name:
+			ns, name = name.split(':')
+			fullNs = self._aliases[ns]
+			return self.manager.getElement(f'{fullNs}[:]{name}')
+		else:
+			directElement = self.getRawElement(name)
+			if directElement != None:
+				return directElement
+
+		# TODO: Only check (anonymous) namespaces that are referenced in the schema.
+		return self.manager.getElement(name)
+
 
 ANONYMOUS_TYPE: str = '__anonymous_type__'
 class Type:
@@ -175,6 +216,7 @@ class Type:
 		self.isComplexContent: bool = False
 		self.isFinal: bool
 		self.isList: bool = False
+		self.isMixed: bool = False
 		self.isSequence: bool = False
 		self.isSimpleContent: bool = False
 		self.members: list["ChildMember"] = []
@@ -183,26 +225,20 @@ class Type:
 		self.namespace = namespace
 		self.name = self._rootNode.attrib['name'] if 'name' in self._rootNode.attrib else ANONYMOUS_TYPE
 
-	def compile(self):
+	def compileType(self):
 		if not (self._rootNode.tag.endswith('complexType') or self._rootNode.tag.endswith('simpleType')):
 			self.raiseRuntime(f'Unknown type {self._rootNode.tag}')
-		if self._rootNode.attrib.get('mixed') == 'true':
-			if 'xlink' in self.namespace.name:
-				print(f'Ignoring type "{self._rootNode.attrib["name"]}" in {self.namespace.name} ({self.namespace.url}) because of mixed content. Should be unused.')
-				self.namespace.types.remove(self)
-				return
-			else:
-				self.raiseRuntime(f'Mixed content not supported in {self._rootNode.attrib["name"]}')
 
 		self.isAbstract = True if self._rootNode.attrib.get('abstract') == 'true' else False
 		self.isFinal = True if self._rootNode.attrib.get('final') == 'true' else False
+		self.isMixed = True if self._rootNode.attrib.get('mixed') == 'true' else False
 
 		self.parseChildren(self._rootNode)
 		self._isCompiled = True
 
 	def parseChildren(self, node: ET.Element):
 		for child in node:
-			if child.tag.endswith('any') or child.tag.endswith('attributeGroup') or child.tag.endswith('group'):
+			if child.tag.endswith('any') or child.tag.endswith('attributeGroup') or child.tag.endswith('group') or child.tag.endswith('anyAttribute'):
 				# TODO: ignored for now - unsure if necessary
 				pass
 			elif child.tag.endswith('annotation'):
@@ -235,7 +271,6 @@ class Type:
 
 	def parseElement(self, node: ET.Element):
 		member = ChildMember(node, self.namespace)
-		member.compile()
 		self.members.append(member)
 		# TODO: print(f'Found element {member.name} on type {self.name}')
 
@@ -247,7 +282,7 @@ class Type:
 				tmpParent.append(element)
 				type = Type(self.namespace, tmpParent)
 				types.append(type)
-				type.compile()
+				type.compileType()
 		self.union = types
 
 	def parseComplexContent(self, node: ET.Element):
@@ -282,7 +317,7 @@ class Type:
 		elif len(node) >= 1 and node[0].tag.endswith('simpleType'):
 			type = Type(self.namespace, node[0])
 			self.base = type
-			type.compile()
+			type.compileType()
 		else:
 			self.raiseRuntime('Unexpected number of children in restriction')
 		# TODO: Parse actual restrictions
@@ -308,7 +343,7 @@ class Type:
 		for element in node:
 			type = Type(self.namespace, element)
 			types.append(type)
-			type.compile()
+			type.compileType()
 		self.union = types
 
 	def raiseRuntime(self, str):
@@ -318,12 +353,17 @@ ANONYMOUS_ELEMENT: str = '__anonymous_element__'
 class Element:
 
 	def __init__(self, node: ET.Element, namespace: NamespaceParser):
+		self.isAbstract: bool = False
 		self.default: any = None
 		self.fixed: str = None
 		self.isReference: bool = False
+		self.reference: Element = None
 		self.name: str = ANONYMOUS_ELEMENT
 		self.namespace: NamespaceParser = namespace
+		self.substitutes = None
+		self.substitutions = []
 		self.type: Type = None
+		self.typeName: str = None
 		self.use: str = "optional"
 
 		for attr, value in node.attrib.items():
@@ -335,25 +375,45 @@ class Element:
 				self.isReference = True
 				self.name = value
 			elif attr == 'type':
-				self.type = namespace.getType(node.attrib[attr])
+				self.typeName = value
 			elif attr == 'use':
 				self.use = value
 			elif attr == 'fixed':
 				self.fixed = value
+			elif attr == 'abstract':
+				self.isAbstract = True if value == 'true' else False
+			elif attr == 'nillable':
+				pass # TODO: We probably need to know this.
+			elif attr == 'substitutionGroup':
+				self.substitutes = value
+			elif attr == 'block':
+				pass # not interesting for us - we're not validating the schema
 			else:
 				raise RuntimeError(f'Unknown attribute {attr} => {value} on {node.tag} in {self.namespace.name} $({self.namespace.url})')
+
+	def addSubstitution(self, subst):
+		self.substitutions.append(subst)
+
+	def compileElement(self):
+		if self.isReference:
+			self.reference = self.namespace.getElement(self.name)
+		elif self.typeName != None:
+			self.type = self.namespace.getType(self.typeName)
+		else:
+			print(f'type {self.name} in {self.namespace.name} isn\'t ref and doesn\'t have a type... unsure what that means')
+
+		if self.substitutes != None:
+			target = self.namespace.getElement(self.substitutes)
+			if target == None:
+				raise RuntimeError(f'Unknown element {self.substitutes}')
+			target.addSubstitution(self)
+
 
 
 ANONYMOUS_MEMBER = "__anonymous_member__"
 class ChildMember:
-	name: str
-	namespace: NamespaceParser
-	type: Type
-
 	def __init__(self, node: ET.Element, namespace: NamespaceParser):
-		self.name = node.attrib['name'] if 'name' in node.attrib else ANONYMOUS_MEMBER
-		self.namespace = namespace
-
-	def compile(self):
-		# TODO: implement
-		pass
+		self._node: ET.Element = node
+		self.name: str = node.attrib['name'] if 'name' in node.attrib else ANONYMOUS_MEMBER
+		self.namespace: NamespaceParser = namespace
+		self.type: Type = None
