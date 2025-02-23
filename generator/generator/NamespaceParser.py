@@ -1,3 +1,4 @@
+from datetime import datetime
 from io import BytesIO
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -17,8 +18,15 @@ class NamespaceManager:
 		self.load(url, name)
 		print("Loaded files - parsing now")
 		for namespace in self.namespaces.values():
-			namespace.compile()
+			namespace.compileTypes()
+		for namespace in self.namespaces.values():
+			namespace.compileElements()
 	
+	def createFiles(self, rootFolder):
+		print(f"Writing classes to {rootFolder}")
+		for namespace in self.namespaces.values():
+			namespace.createFiles(rootFolder)
+
 	def load(self, url: str, name: str):
 		if name in self.namespaces:
 			return self.namespaces[name]
@@ -54,18 +62,18 @@ class NamespaceManager:
 
 		match name:
 			case 'boolean':
-				return SimpleType("boolean")
+				return SimpleType("bool")
 			case 'double' | 'decimal' | 'float':
 				return SimpleType("double")
 			case 'integer' | 'negativeInteger' | 'nonNegativeInteger' | 'nonPositiveInteger' | 'positiveInteger':
 				# TODO: use the correct restrictions on these - probably best by loading the xmlschema schema.
-				return SimpleType("integer")
+				return SimpleType("int")
 			case 'anyURI' | 'date' | 'dateTime' | 'duration' | 'gDay' | 'gMonth' | 'gMonthDay' | 'gYear' | 'gYearMonth' | 'ID' | 'Name' | 'NCName' | 'normalizedString' | 'QName' | 'string' | 'time' | 'token':
 				# TODO: use the correct restrictions on these - probably best by loading the xmlschema schema.
-				return SimpleType("string")
+				return SimpleType("std::string")
 			case 'anyType':
 				# TODO: Not sure what is correct to return here...
-				return SimpleType("string")
+				return SimpleType("std::string")
 
 		raise RuntimeError(f'Type {name} not found.')
 
@@ -86,10 +94,28 @@ class NamespaceManager:
 
 		raise RuntimeError(f'Element {name} not found.')
 
+def findBestNameBySplit(name, char):
+	if char not in name:
+		return name
+	splitName = name.split(char)
+	for i in range(-1, -len(splitName), -1):
+		try:
+			float(splitName[i])
+		except:
+			return splitName[i]
+			break
+	raise RuntimeError("Only numeric path segments?!")
+
+def getSimpleNsName(name):
+	simpleName = findBestNameBySplit(name, '/')
+	return findBestNameBySplit(simpleName, ':')
+
 class NamespaceParser:
 	def __init__(self, url: str, name: str, manager: NamespaceManager):
 		self.url = url
 		self.name = name
+		self.simpleName = getSimpleNsName(self.name)
+		print(f'Reading namespace {self.simpleName} ({self.name})')
 		self.manager = manager
 
 		self._aliases: dict[str, str] = {}
@@ -98,7 +124,7 @@ class NamespaceParser:
 		self.imports: list[ET.Element] = []
 		self.includes: list[str] = []
 		self.types: list['Type'] = []
-	
+
 	def readXml(self):
 		self._readAnyXml(self.url)
 	
@@ -155,13 +181,21 @@ class NamespaceParser:
 				print(f"Looking for children in {element.tag}")
 				self.parseElements(element)
 
-	def compile(self):
+	def compileTypes(self):
 		if 'citygml' not in self.url:
 			print(f"Weird ns {self.name} at {self.url}")
 		for type in self.types:
 			type.compileType()
+	
+	def compileElements(self):
 		for element in self.elements:
 			element.compileElement()
+		for type in self.types:
+			type.compileElements()
+
+	def createFiles(self, rootFolder):
+		for type in self.types:
+			type.createHeader(rootFolder)
 
 	def getRawType(self, name: str) -> 'Type':
 		for type in self.types:
@@ -190,6 +224,8 @@ class NamespaceParser:
 
 	def getElement(self, name: str) -> 'Element':
 		if ':' in name:
+			if name == "gml:id":
+				print(f'{name}')
 			ns, name = name.split(':')
 			fullNs = self._aliases[ns]
 			return self.manager.getElement(f'{fullNs}[:]{name}')
@@ -208,6 +244,7 @@ class Type:
 		self._rootNode: ET.Element = xmlNode
 		self._isCompiled: bool = False
 
+		self.attributes: list['Element'] = []
 		self.base: 'Type' = None
 		self.choice: list['Type'] = []
 		self.elements: list['Element'] = []
@@ -232,9 +269,14 @@ class Type:
 		self.isAbstract = True if self._rootNode.attrib.get('abstract') == 'true' else False
 		self.isFinal = True if self._rootNode.attrib.get('final') == 'true' else False
 		self.isMixed = True if self._rootNode.attrib.get('mixed') == 'true' else False
+		self.isAnonymousType = False
 
 		self.parseChildren(self._rootNode)
 		self._isCompiled = True
+
+	def compileElements(self):
+		for elem in self.elements:
+			elem.compileElement()
 
 	def parseChildren(self, node: ET.Element):
 		for child in node:
@@ -267,11 +309,11 @@ class Type:
 				self.raiseRuntime(f'Unknown tag {child.tag}')
 
 	def parseAttribute(self, node: ET.Element):
-		self.elements.append(Element(node, self.namespace))
+		self.attributes.append(Element(node, self.namespace))
 
 	def parseElement(self, node: ET.Element):
-		member = ChildMember(node, self.namespace)
-		self.members.append(member)
+		member = Element(node, self.namespace)
+		self.elements.append(member)
 		# TODO: print(f'Found element {member.name} on type {self.name}')
 
 	def parseChoice(self, node: ET.Element):
@@ -346,6 +388,112 @@ class Type:
 			type.compileType()
 		self.union = types
 
+	def createHeader(self, rootFolder):
+		header = ''
+		header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
+		header += '// DO NOT EDIT MANUALLY!\n\n'
+		header += '#pragma once\n\n'
+
+		namespace = f'namespace {self.namespace.simpleName} {{\n\n'
+		footer = '\n}\n'
+
+		if self.isSequence:
+			theClass, elementClass, includes = self.createClass(self.name + "Element", self.base, self.base.name + "Element" if self.base != None else None)
+			theSequenceClass, className, sequenceIncludes = self.createSequenceClass(elementClass)
+			theClass += theSequenceClass
+			includes.update(sequenceIncludes)
+		else:
+			theClass, className, includes = self.createClass(self.name, self.base, self.base.name + "Element" if self.base != None else None)
+
+		includes.add('memory') # we always define shared and unique ptrs
+		def sorterKey(item):
+			if isinstance(item, str):
+				return f'{{{item}'
+			elif isinstance(item, SimpleType):
+				return item.name
+			else:
+				return f'{item.namespace.simpleName}/{item.name}'
+		includeStr = '\n'.join([f'#include <{type}>' if isinstance(type, str) else f'#include "{type.namespace.simpleName}/{type.name}.h"' for type in sorted(includes, key=sorterKey)])
+		includeStr += '\n\n\n'
+
+		(rootFolder / self.namespace.simpleName).mkdir(parents = True, exist_ok = True)
+		with open(rootFolder / self.namespace.simpleName / (self.name + ".h"), "w") as headerFile:
+			headerFile.write(header)
+			headerFile.write(includeStr)
+			headerFile.write(namespace)
+			headerFile.write(theClass)
+			headerFile.write(footer)
+
+	def createClass(self, name, base = None, baseName = None):
+		includes = set()
+
+		theClass = ''
+		# TODO: Handle SimpleType inheritance
+		if base != None and not isinstance(base, SimpleType) and base.namespace != self.namespace:
+			baseName = f'{base.namespace.simpleName}::' + baseName
+		theClass += f'class {name} {f": public {baseName} " if base != None and not isinstance(base, SimpleType) else ""}{{\n'
+		if base != None and not isinstance(base, SimpleType):
+			includes.add(base)
+		theClass += '  public:\n'
+		theClass += f'\tusing UPtr = std::unique_ptr<{name}>;\n'
+		theClass += f'\tusing SPtr = std::shared_ptr<{name}>;\n\n'
+
+		for elem in self.elements:
+			type = elem.type
+			if elem.reference != None:
+				ref = elem.reference
+				while ref.reference != None:
+					ref = ref.reference
+				type = ref.type
+
+			if type != None:
+				typeName = type.name
+
+			if elem.anonymousType != None:
+				# TODO: This is bad if the type comes from a reference - we duplicate the types
+				type = elem.anonymousType
+				theSubClass, typeName, subIncludes = elem.anonymousType.createClass(elem.name)
+				includes.update(subIncludes)
+				theClass += theSubClass
+
+			if type == None:
+				print(f"WTH?! No Type??? We're in element {elem.name} in type {name} in namespace {self.namespace.simpleName}")
+				continue
+
+			memberName = elem.name
+			if ':' in memberName:
+				memberName = memberName.split(':')[1]
+			if memberName[0].isupper():
+				memberName = memberName[0].lower() + memberName[1:]
+
+			if not isinstance(type, SimpleType):
+				includes.add(type)
+				typeName = typeName + "::UPtr"
+			elif type.name == 'std::string':
+				includes.add('string')
+			theClass += f'\t{typeName} {memberName};\n'
+
+		theClass += '};\n'
+		return theClass, name, includes
+
+	def createSequenceClass(self, elementType):
+		name = self.name
+
+		includes = set()
+
+		theClass = ''
+		# TODO: Handle SimpleType inheritance
+		theClass += f'class {name} {{\n'
+		theClass += '  public:\n'
+		theClass += f'\tusing UPtr = std::unique_ptr<{self.name}>;\n'
+		theClass += f'\tusing SPtr = std::shared_ptr<{self.name}>;\n\n'
+
+		theClass += f'\tstd::vector<{elementType}::UPtr> elements;\n'
+		includes.add("vector")
+		
+		theClass += '};\n'
+		return theClass, name, includes
+
 	def raiseRuntime(self, str):
 		raise RuntimeError(f'{str} on {self.name} in namespace {self.namespace.name}')
 
@@ -353,9 +501,10 @@ ANONYMOUS_ELEMENT: str = '__anonymous_element__'
 class Element:
 
 	def __init__(self, node: ET.Element, namespace: NamespaceParser):
-		self.isAbstract: bool = False
+		self.anonymousType = None
 		self.default: any = None
 		self.fixed: str = None
+		self.isAbstract: bool = False
 		self.isReference: bool = False
 		self.reference: Element = None
 		self.name: str = ANONYMOUS_ELEMENT
@@ -382,8 +531,8 @@ class Element:
 				self.fixed = value
 			elif attr == 'abstract':
 				self.isAbstract = True if value == 'true' else False
-			elif attr == 'nillable':
-				pass # TODO: We probably need to know this.
+			elif attr == 'nillable' or attr == 'minOccurs' or attr == 'maxOccurs':
+				pass # TODO: We probably need to know this at some point.
 			elif attr == 'substitutionGroup':
 				self.substitutes = value
 			elif attr == 'block':
@@ -391,16 +540,26 @@ class Element:
 			else:
 				raise RuntimeError(f'Unknown attribute {attr} => {value} on {node.tag} in {self.namespace.name} $({self.namespace.url})')
 
+		for child in node:
+			if child.tag.endswith("annotation"):
+				pass # We don't care about this for now.
+			elif child.tag.endswith("complexType") or child.tag.endswith("simpleType"):
+				self.anonymousType = Type(self.namespace, child)
+			else:
+				print(f'type {self.name} in {self.namespace.name} has a child node {child.tag}. This is an anyType. Not sure how to handle for now.')
+
 	def addSubstitution(self, subst):
 		self.substitutions.append(subst)
 
 	def compileElement(self):
 		if self.isReference:
 			self.reference = self.namespace.getElement(self.name)
+			if self.reference == None:
+				print('Why here?')
 		elif self.typeName != None:
 			self.type = self.namespace.getType(self.typeName)
-		else:
-			print(f'type {self.name} in {self.namespace.name} isn\'t ref and doesn\'t have a type... unsure what that means')
+		elif self.anonymousType == None:
+			print(f'type {self.name} in {self.namespace.name} isn\'t ref, doesn\'t have a type (neither referenced, nor anonymous)... unsure what that means')
 
 		if self.substitutes != None:
 			target = self.namespace.getElement(self.substitutes)
@@ -408,7 +567,16 @@ class Element:
 				raise RuntimeError(f'Unknown element {self.substitutes}')
 			target.addSubstitution(self)
 
+	def getType(self):
+		if not self.isReference:
+			return self.type
 
+		elem = self
+		while elem.isReference:
+			if elem.reference == None:
+				print(elem.name, elem)
+			elem = elem.reference
+		return elem
 
 ANONYMOUS_MEMBER = "__anonymous_member__"
 class ChildMember:

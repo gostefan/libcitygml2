@@ -27,6 +27,19 @@
 			"group": {
 				"kind": "build"
 			}
+		},
+		{
+			"label": "Python - generator",
+			"type": "shell",
+			"windows": {
+				"command": "${workspaceFolder}/generator/runGenerator.bat"
+			},
+			"options": {
+				"cwd": "${workspaceFolder}/generator"
+			},
+			"group": {
+				"kind": "build"
+			}
 		}
 	]
 }
