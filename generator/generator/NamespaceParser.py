@@ -397,13 +397,7 @@ class Type:
 		namespace = f'namespace {self.namespace.simpleName} {{\n\n'
 		footer = '\n}\n'
 
-		if self.isSequence:
-			theClass, elementClass, includes = self.createClass(self.name + "Element", self.base, self.base.name + "Element" if self.base != None else None)
-			theSequenceClass, className, sequenceIncludes = self.createSequenceClass(elementClass)
-			theClass += theSequenceClass
-			includes.update(sequenceIncludes)
-		else:
-			theClass, className, includes = self.createClass(self.name, self.base, self.base.name + "Element" if self.base != None else None)
+		theClass, className, includes = self.createClass(self.name, self.base, self.base.name + "Element" if self.base != None else None)
 
 		includes.add('memory') # we always define shared and unique ptrs
 		def sorterKey(item):
@@ -471,7 +465,7 @@ class Type:
 				typeName = typeName + "::UPtr"
 			elif type.name == 'std::string':
 				includes.add('string')
-			theClass += f'\t{typeName} {memberName};\n'
+			theClass += f'\tstd::vector<{typeName}> {memberName};\n'
 
 		theClass += '};\n'
 		return theClass, name, includes
