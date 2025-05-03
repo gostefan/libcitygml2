@@ -1,0 +1,3 @@
+venv/
+schemas/
+**/__pycache__/**
