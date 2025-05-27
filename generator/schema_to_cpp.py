@@ -54,9 +54,22 @@ def create_header_contents(type: xmlschema.validators.XsdComplexType) -> str:
 	namespace: str = f'namespace {cpp_namespace} {{\n\n'
 	footer = f'\n}} // namespace {cpp_namespace}\n'
 
-	the_class: str = f'class {type.local_name} {{ }};\n'
-
 	include: str = ''
+
+	the_class: str = f'class {type.local_name} '
+	if type.base_type:
+		base_namespace: str = get_uniform_namespace(type.base_type.target_namespace).replace(':', '::')
+		the_class += f': public {base_namespace}::{type.base_type.local_name} '
+		base_include_path: str = get_file_path(type.base_type, FileType.HEADER)
+		include += f'#include "{base_include_path}"\n'
+	the_class += '{\n'
+	the_class += 'public:\n'
+	the_class += f'\tusing UPtr = std::unique_ptr<{type.local_name}>;\n'
+	the_class += f'\tusing SPtr = std::shared_ptr<{type.local_name}>;\n\n'
+
+	the_class += '};\n'
+
+	include += ('\n' if len(include) > 0 else '') + '#include <memory>\n\n'
 
 	return header + include + namespace + the_class + footer
 
