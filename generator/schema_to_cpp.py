@@ -1,6 +1,7 @@
 import os, shutil, xmlschema
 from datetime import datetime
 from enum import Enum
+from typing import Callable
 
 SCHEMA_FOLDER = 'schemas'
 OUTPUT_FOLDER = 'generated'
@@ -36,7 +37,7 @@ def get_uniform_namespace(namespace: str) -> str:
 		namespace_parts = [converter(part) for part in namespace_parts]
 	return ':'.join(namespace_parts)
 
-FileType = Enum('FileType', [('HEADER', '.hpp')])
+FileType = Enum('FileType', [('HEADER', '.hpp'), ('SOURCE', '.cpp')])
 def get_file_path(xsd_type: xmlschema.validators.XsdType, type: FileType):
 	namespace: str = get_uniform_namespace(xsd_type.target_namespace)
 	dir: str = namespace.replace(':', '/')
@@ -59,10 +60,25 @@ def create_header_contents(type: xmlschema.validators.XsdType) -> str:
 
 	return header + include + namespace + the_class + footer
 
+def create_body_contents(type: xmlschema.validators.XsdType) -> str:
+	header: str = ''
+	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
+	header += '// DO NOT EDIT MANUALLY!\n\n'
+	header += '#pragma once\n\n'
 
-def write_header(type: xmlschema.validators.XsdType):
-	content: str = create_header_contents(type)
-	file_path: str = get_file_path(type, FileType.HEADER)
+	cpp_namespace: str = get_uniform_namespace(type.target_namespace).replace(':', '::')
+	namespace: str = f'namespace {cpp_namespace} {{\n\n'
+	footer = f'\n}} // namespace {cpp_namespace}\n'
+
+	the_class: str = ''
+
+	include: str = ''
+
+	return header + include + namespace + the_class + footer
+
+def write_source(type: xmlschema.validators.XsdType, fileType: FileType, callback: Callable[[xmlschema.validators.XsdType], str]):
+	content: str = callback(type)
+	file_path: str = get_file_path(type, fileType)
 
 	dir: str = '/'.join(file_path.split('/')[:-1])
 	if not os.path.exists(dir):
@@ -71,9 +87,10 @@ def write_header(type: xmlschema.validators.XsdType):
 	with open(file_path, 'w') as file:
 		file.write(content)
 
-def write_headers(schema: xmlschema.XMLSchema):
+def write_sources(schema: xmlschema.XMLSchema):
 	for _, type in schema.types.items():
-		write_header(type)
+		write_source(type, FileType.HEADER, create_header_contents)
+		write_source(type, FileType.SOURCE, create_body_contents)
 
 if __name__ == '__main__':
 	if os.path.exists(OUTPUT_FOLDER):
@@ -84,4 +101,4 @@ if __name__ == '__main__':
 	print('Found', sum(len(schema.elements) for schema in all_schemas), 'elements and', sum(len(schema.types) for schema in all_schemas), 'types. Converting...')
 
 	for schema in all_schemas:
-		write_headers(schema)
+		write_sources(schema)
