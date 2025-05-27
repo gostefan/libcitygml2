@@ -44,7 +44,7 @@ def get_file_path(xsd_type: xmlschema.validators.XsdType, type: FileType):
 	file: str = xsd_type.local_name
 	return '/'.join([OUTPUT_FOLDER, dir, file + type.value])
 
-def create_header_contents(type: xmlschema.validators.XsdType) -> str:
+def create_header_contents(type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
 	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
 	header += '// DO NOT EDIT MANUALLY!\n\n'
@@ -60,7 +60,7 @@ def create_header_contents(type: xmlschema.validators.XsdType) -> str:
 
 	return header + include + namespace + the_class + footer
 
-def create_body_contents(type: xmlschema.validators.XsdType) -> str:
+def create_body_contents(type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
 	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
 	header += '// DO NOT EDIT MANUALLY!\n\n'
@@ -89,8 +89,12 @@ def write_source(type: xmlschema.validators.XsdType, fileType: FileType, callbac
 
 def write_sources(schema: xmlschema.XMLSchema):
 	for _, type in schema.types.items():
-		write_source(type, FileType.HEADER, create_header_contents)
-		write_source(type, FileType.SOURCE, create_body_contents)
+		if type.is_complex():
+			write_source(type, FileType.HEADER, create_header_contents)
+			write_source(type, FileType.SOURCE, create_body_contents)
+		else:
+			#TODO: Currently we don't handle simple types. Not sure how to approach these yet. Probably these will not be "proper" types in the end.
+			pass
 
 if __name__ == '__main__':
 	if os.path.exists(OUTPUT_FOLDER):
