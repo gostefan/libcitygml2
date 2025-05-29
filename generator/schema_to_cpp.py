@@ -44,28 +44,28 @@ def get_file_path(xsd_type: xmlschema.validators.XsdType, type: FileType):
 	file: str = xsd_type.local_name
 	return '/'.join([OUTPUT_FOLDER, dir, file + type.value])
 
-def create_header_contents(type: xmlschema.validators.XsdComplexType) -> str:
+def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
 	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
 	header += '// DO NOT EDIT MANUALLY!\n\n'
 	header += '#pragma once\n\n'
 
-	cpp_namespace: str = get_uniform_namespace(type.target_namespace).replace(':', '::')
+	cpp_namespace: str = get_uniform_namespace(complex_type.target_namespace).replace(':', '::')
 	namespace: str = f'namespace {cpp_namespace} {{\n\n'
 	footer = f'\n}} // namespace {cpp_namespace}\n'
 
 	include: str = ''
 
-	the_class: str = f'class {type.local_name} '
-	if type.base_type:
-		base_namespace: str = get_uniform_namespace(type.base_type.target_namespace).replace(':', '::')
-		the_class += f': public {base_namespace}::{type.base_type.local_name} '
-		base_include_path: str = get_file_path(type.base_type, FileType.HEADER)
+	the_class: str = f'class {complex_type.local_name} '
+	if complex_type.base_type:
+		base_namespace: str = get_uniform_namespace(complex_type.base_type.target_namespace).replace(':', '::')
+		the_class += f': public {base_namespace}::{complex_type.base_type.local_name} '
+		base_include_path: str = get_file_path(complex_type.base_type, FileType.HEADER)
 		include += f'#include "{base_include_path}"\n'
 	the_class += '{\n'
 	the_class += 'public:\n'
-	the_class += f'\tusing UPtr = std::unique_ptr<{type.local_name}>;\n'
-	the_class += f'\tusing SPtr = std::shared_ptr<{type.local_name}>;\n\n'
+	the_class += f'\tusing UPtr = std::unique_ptr<{complex_type.local_name}>;\n'
+	the_class += f'\tusing SPtr = std::shared_ptr<{complex_type.local_name}>;\n\n'
 
 	the_class += '};\n'
 
@@ -73,13 +73,13 @@ def create_header_contents(type: xmlschema.validators.XsdComplexType) -> str:
 
 	return header + include + namespace + the_class + footer
 
-def create_body_contents(type: xmlschema.validators.XsdComplexType) -> str:
+def create_body_contents(complex_type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
 	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
 	header += '// DO NOT EDIT MANUALLY!\n\n'
 	header += '#pragma once\n\n'
 
-	cpp_namespace: str = get_uniform_namespace(type.target_namespace).replace(':', '::')
+	cpp_namespace: str = get_uniform_namespace(complex_type.target_namespace).replace(':', '::')
 	namespace: str = f'namespace {cpp_namespace} {{\n\n'
 	footer = f'\n}} // namespace {cpp_namespace}\n'
 
@@ -89,9 +89,9 @@ def create_body_contents(type: xmlschema.validators.XsdComplexType) -> str:
 
 	return header + include + namespace + the_class + footer
 
-def write_source(type: xmlschema.validators.XsdType, fileType: FileType, callback: Callable[[xmlschema.validators.XsdType], str]):
-	content: str = callback(type)
-	file_path: str = get_file_path(type, fileType)
+def write_source(xsd_type: xmlschema.validators.XsdType, fileType: FileType, callback: Callable[[xmlschema.validators.XsdType], str]):
+	content: str = callback(xsd_type)
+	file_path: str = get_file_path(xsd_type, fileType)
 
 	dir: str = '/'.join(file_path.split('/')[:-1])
 	if not os.path.exists(dir):
@@ -101,10 +101,10 @@ def write_source(type: xmlschema.validators.XsdType, fileType: FileType, callbac
 		file.write(content)
 
 def write_sources(schema: xmlschema.XMLSchema):
-	for _, type in schema.types.items():
-		if type.is_complex():
-			write_source(type, FileType.HEADER, create_header_contents)
-			write_source(type, FileType.SOURCE, create_body_contents)
+	for _, xsd_type in schema.types.items():
+		if xsd_type.is_complex():
+			write_source(xsd_type, FileType.HEADER, create_header_contents)
+			write_source(xsd_type, FileType.SOURCE, create_body_contents)
 		else:
 			#TODO: Currently we don't handle simple types. Not sure how to approach these yet. Probably these will not be "proper" types in the end.
 			pass
