@@ -44,6 +44,11 @@ def get_file_path(xsd_type: xmlschema.validators.XsdType, type: FileType):
 	file: str = xsd_type.local_name
 	return '/'.join([OUTPUT_FOLDER, dir, file + type.value])
 
+def sort_and_concat_includes(includes: set[str]) -> str:
+	system_includes: list[str] = sorted([f'#include {incl}' for incl in includes if incl.startswith('<')])
+	lib_includes: list[str] = sorted([f'#include {incl}' for incl in includes if incl.startswith('"')])
+	return '\n'.join(system_includes) + ('\n\n' if len(system_includes) > 0 and len(lib_includes) > 0 else '') + '\n'.join(lib_includes) + ('\n\n' if len(includes) > 0 else '')
+
 def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
 	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
@@ -54,14 +59,14 @@ def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) ->
 	namespace: str = f'namespace {cpp_namespace} {{\n\n'
 	footer = f'\n}} // namespace {cpp_namespace}\n'
 
-	include: str = ''
+	includes: set[str] = set(['<memory>'])
 
 	the_class: str = f'class {complex_type.local_name} '
 	if complex_type.base_type:
 		base_namespace: str = get_uniform_namespace(complex_type.base_type.target_namespace).replace(':', '::')
 		the_class += f': public {base_namespace}::{complex_type.base_type.local_name} '
 		base_include_path: str = get_file_path(complex_type.base_type, FileType.HEADER)
-		include += f'#include "{base_include_path}"\n'
+		includes.add(f'"{base_include_path}"')
 	the_class += '{\n'
 	the_class += 'public:\n'
 	the_class += f'\tusing UPtr = std::unique_ptr<{complex_type.local_name}>;\n'
@@ -69,7 +74,7 @@ def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) ->
 
 	the_class += '};\n'
 
-	include += ('\n' if len(include) > 0 else '') + '#include <memory>\n\n'
+	include: str = sort_and_concat_includes(includes)
 
 	return header + include + namespace + the_class + footer
 
