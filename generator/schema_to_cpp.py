@@ -72,6 +72,12 @@ def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) ->
 	the_class += f'\tusing UPtr = std::unique_ptr<{complex_type.local_name}>;\n'
 	the_class += f'\tusing SPtr = std::shared_ptr<{complex_type.local_name}>;\n\n'
 
+	if complex_type.abstract:
+		the_class += 'protected:\n'
+	else:
+		the_class += 'public:\n'
+	the_class += f'\t{complex_type.local_name}() = default;\n\n'
+
 	the_class += '};\n'
 
 	include: str = sort_and_concat_includes(includes)
