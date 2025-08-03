@@ -1,7 +1,7 @@
 import os, shutil, xmlschema
 from datetime import datetime
 from enum import Enum
-from typing import Callable
+from typing import Callable, List, Dict
 
 SCHEMA_FOLDER = 'schemas'
 OUTPUT_FOLDER = 'generated'
@@ -48,6 +48,88 @@ def sort_and_concat_includes(includes: set[str]) -> str:
 	system_includes: list[str] = sorted([f'#include {incl}' for incl in includes if incl.startswith('<')])
 	lib_includes: list[str] = sorted([f'#include {incl}' for incl in includes if incl.startswith('"')])
 	return '\n'.join(system_includes) + ('\n\n' if len(system_includes) > 0 and len(lib_includes) > 0 else '') + '\n'.join(lib_includes) + ('\n\n' if len(includes) > 0 else '')
+
+def get_simple_cpp_type_and_include(simple_type: xmlschema.validators.XsdSimpleType, containing_namespace: str, includes: set[str], backup_name: str) -> tuple[str, str, str]:
+	if simple_type.local_name == None:
+		simple_type.local_name = backup_name
+		the_class: str = create_simple_type(simple_type, includes)
+		return backup_name, '', the_class
+	if 'XMLSchema' in simple_type.target_namespace:
+		if simple_type.local_name == 'double':
+			return 'double', '', ''
+		else:
+			return 'std::string', '<string>', ''
+	cpp_namespace: str = '' if simple_type.target_namespace == containing_namespace else get_uniform_namespace(simple_type.target_namespace).replace(':', '::') + '::'
+	include: str = '' if simple_type.target_namespace == containing_namespace else get_uniform_namespace(simple_type.target_namespace).replace(':', '/') + '/simpleTypes' + FileType.HEADER.value
+	return f'{cpp_namespace}{simple_type.local_name}', '' if len(include) == 0 else f'"{include}"', ''
+
+def create_simple_type(simple_type: xmlschema.validators.XsdSimpleType, includes: set[str]) -> str:
+		the_class: str = ''
+		if simple_type.is_union():
+			member_types: list[str] = []
+			for member in simple_type.member_types:
+				# Handle anonymous inner simple_types like in TimeUnitType
+				cpp_type, include, definition = get_simple_cpp_type_and_include(member, simple_type.target_namespace, includes, simple_type.local_name + 'Member' + str(len(member_types)))
+				if len(definition) > 0:
+					the_class += definition
+				member_types.append(cpp_type)
+				if len(include) > 0:
+					includes.add(include)
+			includes.add('<variant>')
+			the_class += f'using {simple_type.local_name} = std::variant<{", ".join(member_types)}>;\n\n'
+		elif simple_type.is_restriction():
+			# Handle anonymous inner simple_types like in TimeUnitType - can probably happen for restrictions as well
+			cpp_type, include, definition = get_simple_cpp_type_and_include(simple_type.base_type, simple_type.target_namespace, includes, simple_type.local_name + 'Base')
+			if len(definition) > 0:
+				the_class += definition
+			the_class += f'using {simple_type.local_name} = {cpp_type};\n\n'
+			if len(include) > 0:
+				includes.add(include)
+		elif simple_type.is_list():
+			# Handle anonymous inner simple_types like in TimeUnitType - can probably happen for vectors as well
+			cpp_type, include, definition = get_simple_cpp_type_and_include(simple_type.item_type, simple_type.target_namespace, includes, simple_type.local_name + 'Element')
+			if len(definition) > 0:
+				the_class += definition
+			the_class += f'using {simple_type.local_name} = std::vector<{cpp_type}>;\n\n'
+			includes.add('<vector>')
+			if len(include) > 0:
+				includes.add(include)
+		else:
+			print("Unknown simple type ", simple_type)
+		return the_class
+
+def create_simple_header_contents(simple_types: List[xmlschema.validators.XsdSimpleType]) -> str:
+	header: str = ''
+	header += '// This file was generated on ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '.\n'
+	header += '// DO NOT EDIT MANUALLY!\n\n'
+	header += '#pragma once\n\n'
+
+	cpp_namespace: str = get_uniform_namespace(simple_types[0].target_namespace).replace(':', '::')
+	namespace: str = f'namespace {cpp_namespace} {{\n\n'
+	footer = f'}} // namespace {cpp_namespace}\n'
+
+	includes: set[str] = set()
+
+	the_class = ''
+
+	for simple_type in simple_types:
+		the_class += create_simple_type(simple_type, includes)
+
+	include: str = sort_and_concat_includes(includes)
+
+	return header + include + namespace + the_class + footer
+
+def write_simple_sources(xsd_types: List[xmlschema.validators.XsdType], fileType: FileType, callback: Callable[[List[xmlschema.validators.XsdSimpleType]], str]):
+	content: str = callback(xsd_types)
+	namespace: str = get_uniform_namespace(xsd_types[0].target_namespace)
+	dir: str = OUTPUT_FOLDER + '/' + namespace.replace(':', '/')
+	file_path: str = dir + '/simpleTypes' +  fileType.value
+
+	if not os.path.exists(dir):
+		os.makedirs(dir)
+
+	with open(file_path, 'w') as file:
+		file.write(content)
 
 def create_header_contents(complex_type: xmlschema.validators.XsdComplexType) -> str:
 	header: str = ''
@@ -100,7 +182,7 @@ def create_body_contents(complex_type: xmlschema.validators.XsdComplexType) -> s
 
 	return header + include + namespace + the_class + footer
 
-def write_source(xsd_type: xmlschema.validators.XsdType, fileType: FileType, callback: Callable[[xmlschema.validators.XsdType], str]):
+def write_complex_source(xsd_type: xmlschema.validators.XsdType, fileType: FileType, callback: Callable[[xmlschema.validators.XsdType], str]):
 	content: str = callback(xsd_type)
 	file_path: str = get_file_path(xsd_type, fileType)
 
@@ -111,14 +193,29 @@ def write_source(xsd_type: xmlschema.validators.XsdType, fileType: FileType, cal
 	with open(file_path, 'w') as file:
 		file.write(content)
 
+# lower values have less dependencies - dependent types have at least 1 more than base types
+def typeHierarchyDepth(type: xmlschema.validators.XsdSimpleType) -> str:
+	if type.base_type:
+		return typeHierarchyDepth(type.base_type) + 1
+	elif type.is_union():
+		return sum([typeHierarchyDepth(sub_type) for sub_type in type.member_types]) + 1
+	elif type.is_list():
+		return typeHierarchyDepth(type.item_type) + 1
+	else:
+		return 0 
+
 def write_sources(schema: xmlschema.XMLSchema):
+	simple_types: List[xmlschema.validators.XsdSimpleType] = [type for _, type in schema.types.items() if type.is_simple()]
+	if len(simple_types) == 0:
+		return
+
+	simple_types.sort(key=typeHierarchyDepth) # Simplest types first, more complex later to satisfy internal dependencies
+	write_simple_sources(simple_types, FileType.HEADER, create_simple_header_contents)
+
 	for _, xsd_type in schema.types.items():
 		if xsd_type.is_complex():
-			write_source(xsd_type, FileType.HEADER, create_header_contents)
-			write_source(xsd_type, FileType.SOURCE, create_body_contents)
-		else:
-			#TODO: Currently we don't handle simple types. Not sure how to approach these yet. Probably these will not be "proper" types in the end.
-			pass
+			write_complex_source(xsd_type, FileType.HEADER, create_header_contents)
+			write_complex_source(xsd_type, FileType.SOURCE, create_body_contents)
 
 if __name__ == '__main__':
 	if os.path.exists(OUTPUT_FOLDER):
